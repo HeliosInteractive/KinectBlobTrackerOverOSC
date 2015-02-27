@@ -16,7 +16,8 @@ using Timer = System.Timers.Timer;
 using System.Collections.ObjectModel;
 using System.Windows.Controls;
 using System.Windows.Data;
-
+using System.Linq;
+using Newtonsoft.Json;
 namespace KinectWPFOpenCV
 {
     /// <summary>
@@ -37,7 +38,7 @@ namespace KinectWPFOpenCV
         private Timer timer;
         private int reverseXMult = 1;
         private int reverseYMult = 1;
-
+        private List<HotSpot> hotspotSource = new List<HotSpot>();
         //private Image<Gray, Byte> draw;
         private Image<Bgr, byte> openCVImg;
         private Image<Gray, byte> thresholdedImage;
@@ -45,8 +46,8 @@ namespace KinectWPFOpenCV
         private float yPos;
 
         // Osc Members
-        private string oscAddress = "127.0.0.1";
-        private string oscPort = "9999";
+        //private string oscAddress = "127.0.0.1";
+        //private string oscPort = "9999";
         private static UdpWriter oscWriter;
         private static string[] oscArgs = new string[2];
 
@@ -102,10 +103,9 @@ namespace KinectWPFOpenCV
                 irPixels = new byte[fd.LengthInPixels * 4];
                 irBitmap = new WriteableBitmap(this.irReader.DepthFrameSource.FrameDescription.Width, this.irReader.DepthFrameSource.FrameDescription.Height, 96.0, 96.0, PixelFormats.Gray8, null);
 
-
-
-
                 this.Dispatcher.ShutdownStarted += this.Dispatcher_ShutdownStarted;
+                LoadSettingsFromFile();
+
                 //BlobsImage.Source = irBitmap;
                 //sensor.AllFramesReady += sensor_AllFramesReady;
 
@@ -114,8 +114,8 @@ namespace KinectWPFOpenCV
                 //_tracker = new BlobTrackerAuto<Bgr>();
 
                 // Setup osc sender
-                oscArgs[0] = oscAddress;
-                oscArgs[1] = oscPort;
+                oscArgs[0] = TbIpAddress.Text;
+                oscArgs[1] = TbPortNumber.Text;
                 oscWriter = new UdpWriter(oscArgs[0], Convert.ToInt32(oscArgs[1]));
                 //oscWriter.Dispose();
                 //oscWriter = new UdpWriter(oscArgs[0], Convert.ToInt32(oscArgs[1]));
@@ -123,7 +123,6 @@ namespace KinectWPFOpenCV
                 timer.Interval = 4000;
                 timer.Elapsed += TimerOnElapsed;
 
-                LoadSettingsFromFile();
                 this.processingThread = new ProcessingThread(sensor, this.irReader_FrameArrived);
 
                 try
@@ -145,6 +144,7 @@ namespace KinectWPFOpenCV
 
         }
 
+
         void irReader_FrameArrived(object sender, DepthFrameArrivedEventArgs e)
         {
             using (var irFrame = e.FrameReference.AcquireFrame())
@@ -161,14 +161,36 @@ namespace KinectWPFOpenCV
                     irFrame.CopyFrameDataToArray(irBuffer);
                     for (int i = 0; i < irBuffer.Length; i++)
                     {
+                        var colorPixelIndex = i;
                         var depth = irBuffer[i];
                         int MapDepthToByte = 8000 / 256;
-                        byte intesityValue = (byte)(depth >= minDepth.Value && depth <= maxDepth.Value ? (depth / MapDepthToByte) : 0);
+                        //byte intesityValue = (byte)(depth >= minDepth.Value && depth <= maxDepth.Value ? (depth.Remap(minDepth.Value, maxDepth.Value,minDepth.Minimum, maxDepth.Maximum) / MapDepthToByte) : 0);
+                        byte intesityValue = (byte)(depth >= minDepth.Value && depth <= maxDepth.Value ? (byte)(depth << 8) : 0);
+                        if (depth == 0)
+                        {
+                            irPixels[colorPixelIndex++] = 0;
+                            irPixels[colorPixelIndex++] = 0;
+                            irPixels[colorPixelIndex++] = 0;
+                        }
+                        else if (depth < minDepth.Value || depth > maxDepth.Value)
+                        {
+                            irPixels[colorPixelIndex++] = 0;
+                            irPixels[colorPixelIndex++] = 0;
+                            irPixels[colorPixelIndex++] = 0;
+                        }
+                        else
+                        {
+                            double gray = ((Math.Sin((double)depth / 250))) * 254;
 
-                        irPixels[i] = intesityValue;
-                        irPixels[i + 1] = intesityValue;
-                        irPixels[i + 2] = intesityValue;
-                        irPixels[i + 3] = 254;
+                            irPixels[colorPixelIndex++] = (byte)gray;
+                            irPixels[colorPixelIndex++] = (byte)gray;
+                            irPixels[colorPixelIndex++] = (byte)gray;
+                        }
+
+                        //irPixels[i] = intesityValue;
+                        //irPixels[i + 1] = intesityValue;
+                        //irPixels[i + 2] = intesityValue;
+                        irPixels[colorPixelIndex++] = 254;
                     }
                     this.irBitmap.WritePixels(
                         new Int32Rect(0, 0, irFrame.FrameDescription.Width, irFrame.FrameDescription.Height),
@@ -262,7 +284,7 @@ namespace KinectWPFOpenCV
                 {
                     var pixel = img[new System.Drawing.Point(i, k)];
                     var brightness = (pixel.Blue + pixel.Green + pixel.Red) / 3;
-                    brightnessTotal += (int)brightness>0?1:0;
+                    brightnessTotal += (int)brightness > 0 ? 1 : 0;
                 }
             }
             // average pixel brightness in target rectangle:
@@ -275,72 +297,98 @@ namespace KinectWPFOpenCV
             {
                 using (MemStorage stor = new MemStorage())
                 {
-                    //Find contours with no holes try CV_RETR_EXTERNAL to find holes
-                    Contour<System.Drawing.Point> contours = thresholdedImage.FindContours(
-                        Emgu.CV.CvEnum.CHAIN_APPROX_METHOD.CV_CHAIN_APPROX_SIMPLE,
-                        Emgu.CV.CvEnum.RETR_TYPE.CV_RETR_EXTERNAL,
-                        stor);
 
-                    var hotspots = HotSpotsDataGrid.ItemsSource;
-                    if (hotspots != null)
-                        foreach (HotSpot hotspot in hotspots)
+
+
+                    if (hotspotSource != null)
+                    {
+
+                        foreach (HotSpot hotspot in hotspotSource)
                         {
-                            var brightnessValue = measureOverlap (hotspot,openCVImg);
-                            var color = brightnessValue < hotspotSesitivity.Value ? System.Drawing.Color.Yellow : System.Drawing.Color.Green;
+                            var brightnessValue = measureOverlap(hotspot, openCVImg);
+                            var previousHotspotStatus = hotspot.Status;
+                            hotspot.Status = brightnessValue > hotspotSesitivity.Value;
+                            var color = !hotspot.Status ? System.Drawing.Color.Yellow : System.Drawing.Color.Green;
                             MCvBox2D hotbox = new MCvBox2D(new System.Drawing.PointF(hotspot.X + hotspot.Width * .5f, hotspot.Y + hotspot.Height * .5f), new System.Drawing.SizeF(hotspot.Width, hotspot.Height), 0);
                             openCVImg.Draw(hotbox, new Bgr(color), 2);
+                            if (hotspot.Status != previousHotspotStatus)
+                            {
+                                HotSpotsDataGrid.ItemsSource = null;
+                                HotSpotsDataGrid.ItemsSource = hotspotSource;
+                                // send osc data
+                                try
+                                {
+                                    SendHotspotOsc(hotspot.ID, hotspot.Status);
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.WriteLine("Failed to send osc: ");
+                                    Console.WriteLine(ex);
+                                }
+                            }
 
                         }
+                        HotSpotsDataGrid.ItemsSource = hotspotSource;
+
+                    }
                     int contourCounter = 0;
 
                     if (isEnableBlobDetection.IsChecked == true)
-                    for (int i = 0; contours != null; contours = contours.HNext)
                     {
-                        i++;
+                        //Find contours with no holes try CV_RETR_EXTERNAL to find holes
+                        Contour<System.Drawing.Point> contours = thresholdedImage.FindContours(
+                            Emgu.CV.CvEnum.CHAIN_APPROX_METHOD.CV_CHAIN_APPROX_SIMPLE,
+                            Emgu.CV.CvEnum.RETR_TYPE.CV_RETR_EXTERNAL,
+                            stor);
 
-                        if ((contours.Area > Math.Pow(sliderMinSize.Value, 2)) &&
-                            (contours.Area < Math.Pow(sliderMaxSize.Value, 2)))
+                        for (int i = 0; contours != null; contours = contours.HNext)
                         {
-                            box = contours.GetMinAreaRect();
+                            i++;
 
-                            openCVImg.Draw(box, new Bgr(System.Drawing.Color.Red), 2);
-                            thresholdedImage.Draw(box, new Gray(255), 2);
-                            blobCount++;
-                            if (reverseX.IsChecked == true)
+                            if ((contours.Area > Math.Pow(sliderMinSize.Value, 2)) &&
+                                (contours.Area < Math.Pow(sliderMaxSize.Value, 2)))
                             {
-                                reverseXMult = -1;
-                            }
-                            else
-                            {
-                                reverseXMult = 1;
-                            }
-                            if (reverseY.IsChecked == true)
-                            {
-                                reverseYMult = -1;
-                            }
-                            else
-                            {
-                                reverseYMult = 1;
-                            }
-                            var x = box.center.X / sensor.ColorFrameSource.FrameDescription.Width;
-                            var y = box.center.Y / sensor.ColorFrameSource.FrameDescription.Height;
-                            xPos = (reverseXMult * (x - (float)centerXOffset.Value) + (reverseXMult * (float)xOffset.Value * x)) * (float)xMultiplier.Value;
-                            yPos = (reverseYMult * (y - (float)centerYOffset.Value) + (reverseYMult * (float)yOffset.Value * y)) * (float)yMultiplier.Value;
+                                box = contours.GetMinAreaRect();
 
-                            /* calculating moving avarage */
-                            var smoothFactor = (float)smoothingFactor.Value / 100;
-                            oldX = (1 - smoothFactor) * xPos + oldX * smoothFactor;
-                            oldY = (1 - smoothFactor) * yPos + oldY * smoothFactor;
+                                openCVImg.Draw(box, new Bgr(System.Drawing.Color.Red), 2);
+                                thresholdedImage.Draw(box, new Gray(255), 2);
+                                blobCount++;
+                                if (reverseX.IsChecked == true)
+                                {
+                                    reverseXMult = -1;
+                                }
+                                else
+                                {
+                                    reverseXMult = 1;
+                                }
+                                if (reverseY.IsChecked == true)
+                                {
+                                    reverseYMult = -1;
+                                }
+                                else
+                                {
+                                    reverseYMult = 1;
+                                }
+                                var x = box.center.X / sensor.ColorFrameSource.FrameDescription.Width;
+                                var y = box.center.Y / sensor.ColorFrameSource.FrameDescription.Height;
+                                xPos = (reverseXMult * (x - (float)centerXOffset.Value) + (reverseXMult * (float)xOffset.Value * x)) * (float)xMultiplier.Value;
+                                yPos = (reverseYMult * (y - (float)centerYOffset.Value) + (reverseYMult * (float)yOffset.Value * y)) * (float)yMultiplier.Value;
 
-                            // send osc data
-                            try
-                            {
-                                SendOsc(oldX, oldY);
-                            }
-                            catch (Exception ex)
-                            {
-                                Console.WriteLine("Failed to send osc: ");
-                                Console.WriteLine(ex);
+                                /* calculating moving avarage */
+                                var smoothFactor = (float)smoothingFactor.Value / 100;
+                                oldX = (1 - smoothFactor) * xPos + oldX * smoothFactor;
+                                oldY = (1 - smoothFactor) * yPos + oldY * smoothFactor;
+
+                                // send osc data
+                                try
+                                {
+                                    SendBlobOsc(oldX, oldY, i);
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.WriteLine("Failed to send osc: ");
+                                    Console.WriteLine(ex);
+                                }
                             }
 
                         }
@@ -442,7 +490,17 @@ namespace KinectWPFOpenCV
                     + centerXOffset.Value.ToString() + "|" + centerYOffset.Value.ToString() + "|"
                     + reverseX.IsChecked.ToString() + "|" + reverseY.IsChecked.ToString() + "|"
                     + thresholdValue.Value.ToString() + "|"
-                    + sliderMinSize.Value.ToString() + "|" + sliderMaxSize.Value.ToString() + "|" + smoothingFactor.Value.ToString();
+                    + sliderMinSize.Value.ToString() + "|" + sliderMaxSize.Value.ToString() + "|" + smoothingFactor.Value.ToString()
+                    + "|" + JsonConvert.SerializeObject(HotSpotsDataGrid.ItemsSource)
+                    + "|" + hotspotSesitivity.Value
+                    + "|" + minDepth.Value
+                    + "|" + maxDepth.Value
+                    + "|" + isEnableBlobDetection.IsChecked
+                    + "|" + TbIpAddress.Text
+                    + "|" + TbPortNumber.Text
+                    ;
+
+
                 using (System.IO.StreamWriter file = new System.IO.StreamWriter(@"Settings.txt", false))
                 {
                     file.WriteLine(settings);
@@ -482,7 +540,6 @@ namespace KinectWPFOpenCV
             //_elapsedTime = (int)_timeOfMessage + _messageTime;
             try
             {
-                HotSpotsDataGrid.ItemsSource = new List<HotSpot>();
                 string data = System.IO.File.ReadAllText(@"Settings.txt");
                 string[] values = data.Split('|');
                 xMultiplier.Value = int.Parse(values[0]);
@@ -496,7 +553,16 @@ namespace KinectWPFOpenCV
                 thresholdValue.Value = int.Parse(values[8]);
                 sliderMinSize.Value = int.Parse(values[9]);
                 sliderMaxSize.Value = int.Parse(values[10]);
-                smoothingFactor.Value = int.Parse(values[11]);
+                hotspotSource = JsonConvert.DeserializeObject<HotSpot[]>(values[12]).ToList<HotSpot>();
+                hotspotSesitivity.Value = float.Parse(values[13]);
+                minDepth.Value = float.Parse(values[14]);
+                maxDepth.Value = float.Parse(values[15]);
+                TbIpAddress.Text = (values[17]);
+                TbPortNumber.Text = (values[18]);
+
+                HotSpotsDataGrid.ItemsSource = hotspotSource;
+
+
                 txtMessage.Text = "Settings Loaded.";
                 timer.Start();
             }
@@ -512,13 +578,28 @@ namespace KinectWPFOpenCV
         /// </summary>
         /// <param name="x"></param>
         /// <param name="y"></param>
-        private void SendOsc(float x, float y)
+        private void SendBlobOsc(float x, float y, int blobId)
         {
             // send osc data
             var elements = new List<OscElement>();
             var address = "/bait";
+            elements.Add(new OscElement(address + "/id", blobId));
             elements.Add(new OscElement(address + "/x", x));
             elements.Add(new OscElement(address + "/y", y));
+            oscWriter.Send(new OscBundle(DateTime.Now, elements.ToArray()));
+        }
+        /// <summary>
+        /// Sends Osc on the global port
+        /// </summary>
+        /// <param name="x"></param>
+        /// <param name="y"></param>
+        private void SendHotspotOsc(string hotspotId, bool hotspotValue)
+        {
+            // send osc data
+            var elements = new List<OscElement>();
+            var address = "/bait";
+            elements.Add(new OscElement(address + "/id", hotspotId));
+            elements.Add(new OscElement(address + "/status", hotspotValue.ToString()));
             oscWriter.Send(new OscBundle(DateTime.Now, elements.ToArray()));
         }
 
@@ -727,6 +808,25 @@ namespace KinectWPFOpenCV
             {
                 sensor.Close();
             }
+            Properties.Settings.Default.Save();
+
+
+        }
+
+
+        private void Reconnect_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                oscArgs[0] = TbIpAddress.Text;
+                oscArgs[1] = TbPortNumber.Text;
+                oscWriter = new UdpWriter(oscArgs[0], Convert.ToInt32(oscArgs[1]));
+            }
+            catch (Exception ex)
+            {
+                txtMessage.Text = ex.Message;
+            }
+
         }
 
 
@@ -741,14 +841,28 @@ namespace KinectWPFOpenCV
 
     //Hotspot model
 
+
     public class HotSpot
     {
+        public string ID { set; get; }
         public int X { set; get; }
         public int Y { set; get; }
         public int Width { set; get; }
         public int Height { set; get; }
-
+        public bool Status { get; set; }
     }
 
+    public static class ExtensionMethods
+    {
+        public static ushort Remap(this ushort value, double from1, double to1, double from2, double to2)
+        {
+            return (ushort)((value - from1) / (to1 - from1) * (to2 - from2) + from2);
+        }
 
+        public static ushort Remap(this ushort value, ushort from1, ushort to1, ushort from2, ushort to2)
+        {
+            return (ushort)((value - from1) / (to1 - from1) * (to2 - from2) + from2);
+        }
+
+    }
 }
