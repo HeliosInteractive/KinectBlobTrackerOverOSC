@@ -170,6 +170,7 @@ namespace KinectWPFOpenCV
                         {
                             irPixels[colorPixelIndex++] = 0;
                             irPixels[colorPixelIndex++] = 0;
+                            irPixels[colorPixelIndex++] = 0; 
                             irPixels[colorPixelIndex++] = 0;
                         }
                         else if (depth < minDepth.Value || depth > maxDepth.Value)
@@ -177,6 +178,8 @@ namespace KinectWPFOpenCV
                             irPixels[colorPixelIndex++] = 0;
                             irPixels[colorPixelIndex++] = 0;
                             irPixels[colorPixelIndex++] = 0;
+                            irPixels[colorPixelIndex++] = 0;
+
                         }
                         else
                         {
@@ -185,12 +188,13 @@ namespace KinectWPFOpenCV
                             irPixels[colorPixelIndex++] = (byte)gray;
                             irPixels[colorPixelIndex++] = (byte)gray;
                             irPixels[colorPixelIndex++] = (byte)gray;
+                            irPixels[colorPixelIndex++] = 254;
                         }
 
                         //irPixels[i] = intesityValue;
                         //irPixels[i + 1] = intesityValue;
                         //irPixels[i + 2] = intesityValue;
-                        irPixels[colorPixelIndex++] = 254;
+                        
                     }
                     this.irBitmap.WritePixels(
                         new Int32Rect(0, 0, irFrame.FrameDescription.Width, irFrame.FrameDescription.Height),
@@ -582,7 +586,7 @@ namespace KinectWPFOpenCV
         {
             // send osc data
             var elements = new List<OscElement>();
-            var address = "/bait";
+            var address = "/blob";
             elements.Add(new OscElement(address + "/id", blobId));
             elements.Add(new OscElement(address + "/x", x));
             elements.Add(new OscElement(address + "/y", y));
@@ -597,7 +601,8 @@ namespace KinectWPFOpenCV
         {
             // send osc data
             var elements = new List<OscElement>();
-            var address = "/bait";
+            var address = "/hotspot";
+             //elements.Add(new OscElement("/hotspot/"+ hotspotId+"/" , hotspotValue.ToString()));
             elements.Add(new OscElement(address + "/id", hotspotId));
             elements.Add(new OscElement(address + "/status", hotspotValue.ToString()));
             oscWriter.Send(new OscBundle(DateTime.Now, elements.ToArray()));
